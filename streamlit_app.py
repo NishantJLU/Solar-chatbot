@@ -34,8 +34,17 @@ with st.sidebar:
     
     active_key = user_api_key.strip() if user_api_key else ""
     
+    selected_model = st.selectbox(
+        "AI Model",
+        options=["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-3.1-flash-lite", "Custom"],
+        index=0,
+        help="Select the Gemini model to use. gemini-3.8-flash is the latest recommended model."
+    )
+    if selected_model == "Custom":
+        selected_model = st.text_input("Custom Model Name", value="gemini-3.8-flash")
+    
     if active_key:
-        st.success("Gemini API configured", icon=":material/check_circle:")
+        st.success(f"Gemini configured ({selected_model})", icon=":material/check_circle:")
     else:
         st.info("No Gemini API key found. Will attempt local Ollama or statistical queries.", icon=":material/info:")
 
@@ -127,8 +136,25 @@ def get_data_answer(question: str) -> str | None:
 
     return None
 
+def extract_text_from_interaction(res) -> str | None:
+    if hasattr(res, "output_text") and res.output_text:
+        return res.output_text
+    if hasattr(res, "text") and res.text:
+        return res.text
+    if hasattr(res, "steps") and res.steps:
+        parts = []
+        for step in reversed(res.steps):
+            content = getattr(step, "content", None)
+            if isinstance(content, list):
+                for item in content:
+                    if getattr(item, "type", "") == "text":
+                        parts.append(getattr(item, "text", ""))
+        if parts:
+            return "".join(reversed(parts))
+    return None
+
 # AI Fallback: Gemini -> Ollama -> Helpful Error
-def query_ai_model(question: str, df: pd.DataFrame, api_key: str) -> str:
+def query_ai_model(question: str, df: pd.DataFrame, api_key: str, model_name: str = "gemini-3.8-flash") -> str:
     summary = df.describe().round(2).to_string()
     system_prompt = (
         "You are a solar plant data assistant. "
@@ -148,24 +174,43 @@ def query_ai_model(question: str, df: pd.DataFrame, api_key: str) -> str:
             from google import genai
             client = genai.Client(api_key=api_key)
             combined_prompt = f"{system_prompt}\n\nUser Question: {question}"
-            
-            # Prioritize gemini-3.8-flash as recommended by the Gemini API, with fallbacks
-            candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-            last_err = None
-            for model_name in candidate_models:
+
+            candidates = [model_name] + [
+                m for m in ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-3.1-flash-lite"]
+                if m != model_name
+            ]
+
+            primary_err = None
+            for cand in candidates:
+                # Approach A: Interactions API (recommended by Gemini for gemini-3.8-flash and newer)
                 try:
-                    response = client.models.generate_content(
-                        model=model_name,
+                    if hasattr(client, "interactions"):
+                        res = client.interactions.create(
+                            model=cand,
+                            input=question,
+                            system_instruction=system_prompt
+                        )
+                        txt = extract_text_from_interaction(res)
+                        if txt:
+                            return txt
+                except Exception as e_int:
+                    if primary_err is None:
+                        primary_err = e_int
+
+                # Approach B: Generate Content API
+                try:
+                    res = client.models.generate_content(
+                        model=cand,
                         contents=combined_prompt
                     )
-                    if response and response.text:
-                        return response.text
-                except Exception as err:
-                    last_err = err
-                    continue
-            
-            if last_err:
-                return f"⚠️ **Gemini API Error:** {last_err}"
+                    if res and res.text:
+                        return res.text
+                except Exception as e_gc:
+                    if primary_err is None:
+                        primary_err = e_gc
+
+            if primary_err:
+                return f"⚠️ **Gemini API Error:** {primary_err}"
         except Exception as e:
             return f"⚠️ **Gemini API Error:** {e}"
 
@@ -219,7 +264,7 @@ if question:
             if data_answer is not None:
                 answer = data_answer
             else:
-                answer = query_ai_model(question, df, active_key)
+                answer = query_ai_model(question, df, active_key, selected_model)
 
         st.markdown(answer)
 
