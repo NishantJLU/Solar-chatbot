@@ -1,0 +1,23 @@
+# Python virtual environments
+.venv/
+.venv*/
+env/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Streamlit secrets (NEVER commit secrets!)
+.streamlit/secrets.toml
+
+# IDE and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.claude/
+.agents/
