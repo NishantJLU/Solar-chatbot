@@ -148,15 +148,26 @@ def query_ai_model(question: str, df: pd.DataFrame, api_key: str) -> str:
             from google import genai
             client = genai.Client(api_key=api_key)
             combined_prompt = f"{system_prompt}\n\nUser Question: {question}"
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=combined_prompt
-            )
-            if response and response.text:
-                return response.text
+            
+            # Prioritize gemini-3.8-flash as recommended by the Gemini API, with fallbacks
+            candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+            last_err = None
+            for model_name in candidate_models:
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=combined_prompt
+                    )
+                    if response and response.text:
+                        return response.text
+                except Exception as err:
+                    last_err = err
+                    continue
+            
+            if last_err:
+                return f"⚠️ **Gemini API Error:** {last_err}"
         except Exception as e:
-            # If Gemini fails, log or explain
-            st.warning(f"Gemini API request failed: {e}")
+            return f"⚠️ **Gemini API Error:** {e}"
 
     # 2. Try Ollama (for local runs)
     try:
