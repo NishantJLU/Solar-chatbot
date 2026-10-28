@@ -153,9 +153,34 @@ def extract_text_from_interaction(res) -> str | None:
             return "".join(reversed(parts))
     return None
 
+@st.cache_data
+def get_cached_summary(data: pd.DataFrame) -> str:
+    return data.describe().round(2).to_string()
+
+def get_quick_response(question: str) -> str | None:
+    q = question.strip().lower()
+    if q in ["hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "hi!", "hello!"]:
+        return (
+            "☀️ **Hello! I'm your Solar Plant Assistant.**\n\n"
+            "You can ask me questions such as:\n"
+            "- **Dataset Statistics:** *'What is the average power generation?'*, *'Show maximum solar irradiance'*, or *'Summary of panel temperature'*\n"
+            "- **Solar Engineering Concepts:** *'Why does panel temperature affect solar output?'* or *'Explain the impact of cloud cover on irradiance'*."
+        )
+    if q in ["help", "what can you do", "who are you"]:
+        return (
+            "I analyze solar generation dataset metrics and answer solar energy questions. "
+            "Ask me for statistics (average, max, min, median, sample records) or conceptual explanations!"
+        )
+    return None
+
 # AI Fallback: Gemini -> Ollama -> Helpful Error
 def query_ai_model(question: str, df: pd.DataFrame, api_key: str, model_name: str = "gemini-3.8-flash") -> str:
-    summary = df.describe().round(2).to_string()
+    # 1. Check for instant conversational responses
+    quick = get_quick_response(question)
+    if quick:
+        return quick
+
+    summary = get_cached_summary(df)
     system_prompt = (
         "You are a solar plant data assistant. "
         "Explain solar energy concepts simply and helpfully. "
@@ -168,49 +193,49 @@ def query_ai_model(question: str, df: pd.DataFrame, api_key: str, model_name: st
         "say that the exact answer is unavailable."
     )
 
-    # 1. Try Google Gemini if key is provided
+    # 2. Try Google Gemini if key is provided (fast, targeted call without slow loops)
     if api_key:
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
             combined_prompt = f"{system_prompt}\n\nUser Question: {question}"
 
-            candidates = [model_name] + [
-                m for m in ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-3.1-flash-lite"]
-                if m != model_name
-            ]
-
-            primary_err = None
-            for cand in candidates:
-                # Approach A: Interactions API (recommended by Gemini for gemini-3.8-flash and newer)
-                try:
-                    if hasattr(client, "interactions"):
-                        res = client.interactions.create(
-                            model=cand,
-                            input=question,
-                            system_instruction=system_prompt
-                        )
-                        txt = extract_text_from_interaction(res)
-                        if txt:
-                            return txt
-                except Exception as e_int:
-                    if primary_err is None:
-                        primary_err = e_int
-
-                # Approach B: Generate Content API
-                try:
-                    res = client.models.generate_content(
-                        model=cand,
-                        contents=combined_prompt
+            # Fast call: Try user's chosen model via Interactions API first
+            try:
+                if hasattr(client, "interactions"):
+                    res = client.interactions.create(
+                        model=model_name,
+                        input=question,
+                        system_instruction=system_prompt,
+                        timeout=12.0
                     )
-                    if res and res.text:
-                        return res.text
-                except Exception as e_gc:
-                    if primary_err is None:
-                        primary_err = e_gc
+                    txt = extract_text_from_interaction(res)
+                    if txt:
+                        return txt
+            except Exception:
+                pass
 
-            if primary_err:
-                return f"⚠️ **Gemini API Error:** {primary_err}"
+            # Fallback to generate_content on selected model
+            try:
+                res = client.models.generate_content(
+                    model=model_name,
+                    contents=combined_prompt
+                )
+                if res and res.text:
+                    return res.text
+            except Exception as direct_err:
+                # If specific model failed and wasn't gemini-flash-latest, try gemini-flash-latest once
+                if model_name != "gemini-flash-latest":
+                    try:
+                        res = client.models.generate_content(
+                            model="gemini-flash-latest",
+                            contents=combined_prompt
+                        )
+                        if res and res.text:
+                            return res.text
+                    except Exception:
+                        pass
+                return f"⚠️ **Gemini API Error:** {direct_err}"
         except Exception as e:
             return f"⚠️ **Gemini API Error:** {e}"
 
